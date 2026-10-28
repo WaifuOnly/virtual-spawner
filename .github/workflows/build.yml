@@ -4,7 +4,7 @@ on: [push, pull_request, workflow_dispatch]
 jobs:
   build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - name: checkout repository
         uses: actions/checkout@v6
@@ -13,10 +13,17 @@ jobs:
         with:
           java-version: '25'
           distribution: 'microsoft'
+          cache: gradle
       - name: make gradle wrapper executable
         run: chmod +x ./gradlew
-      - name: build
-        run: ./gradlew build --no-daemon --console=plain --stacktrace
+      - name: build (retries if a download times out)
+        run: |
+          for i in 1 2 3; do
+            ./gradlew build --no-daemon --console=plain && exit 0
+            echo "Attempt $i failed, retrying..."
+            sleep 10
+          done
+          exit 1
       - name: upload the mod jar
         uses: actions/upload-artifact@v7
         with:
