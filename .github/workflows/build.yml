@@ -4,6 +4,7 @@ on: [push, pull_request, workflow_dispatch]
 jobs:
   build:
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - name: checkout repository
         uses: actions/checkout@v6
@@ -15,7 +16,7 @@ jobs:
       - name: make gradle wrapper executable
         run: chmod +x ./gradlew
       - name: build
-        run: ./gradlew build
+        run: ./gradlew build --no-daemon --console=plain --stacktrace
       - name: upload the mod jar
         uses: actions/upload-artifact@v7
         with:
