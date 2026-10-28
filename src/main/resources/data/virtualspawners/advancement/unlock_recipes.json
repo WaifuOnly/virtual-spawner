@@ -11,7 +11,8 @@
       "virtualspawners:creeper_spawner",
       "virtualspawners:wither_skeleton_spawner",
       "virtualspawners:blaze_spawner",
-      "virtualspawners:slime_spawner"
+      "virtualspawners:slime_spawner",
+      "virtualspawners:enderman_spawner"
     ]
   }
 }
