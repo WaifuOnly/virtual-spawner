@@ -13,6 +13,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -70,8 +71,14 @@ public class VirtualSpawnersMod implements ModInitializer {
         public String name;
         public String entity;               // entity shown inside the cage
         public String icon;                 // item shown in menus
+        public String color;                // name colour (chat colour name, e.g. dark_purple)
         public double xp;                   // XP per generation cycle (one spawner)
         public Map<String, Double> drops = new LinkedHashMap<>(); // item id -> items per cycle
+
+        TypeCfg color(String c) {
+            this.color = c;
+            return this;
+        }
 
         TypeCfg(String name, String entity, String icon, double xp, Object... dropPairs) {
             this.name = name;
@@ -97,17 +104,19 @@ public class VirtualSpawnersMod implements ModInitializer {
         static Map<String, TypeCfg> defaultTypes() {
             Map<String, TypeCfg> t = new LinkedHashMap<>();
             t.put("skeleton", new TypeCfg("Skeleton Spawner", "minecraft:skeleton", "bone", 40,
-                    "bone", 8, "arrow", 8));
+                    "bone", 8, "arrow", 8).color("white"));
             t.put("zombie", new TypeCfg("Zombie Spawner", "minecraft:zombie", "rotten_flesh", 40,
-                    "rotten_flesh", 8, "iron_ingot", 0.2, "carrot", 0.1, "potato", 0.1));
+                    "rotten_flesh", 8, "iron_ingot", 0.2, "carrot", 0.1, "potato", 0.1).color("dark_green"));
             t.put("creeper", new TypeCfg("Creeper Spawner", "minecraft:creeper", "gunpowder", 40,
-                    "gunpowder", 8));
+                    "gunpowder", 8).color("green"));
             t.put("wither_skeleton", new TypeCfg("Wither Skeleton Spawner", "minecraft:wither_skeleton", "wither_skeleton_skull", 40,
-                    "bone", 8, "coal", 4, "wither_skeleton_skull", 0.2));
+                    "bone", 8, "coal", 4, "wither_skeleton_skull", 0.2).color("dark_gray"));
             t.put("blaze", new TypeCfg("Blaze Spawner", "minecraft:blaze", "blaze_rod", 40,
-                    "blaze_rod", 4));
+                    "blaze_rod", 4).color("gold"));
             t.put("slime", new TypeCfg("Slime Spawner", "minecraft:slime", "slime_ball", 16,
-                    "slime_ball", 12));
+                    "slime_ball", 12).color("green"));
+            t.put("enderman", new TypeCfg("Enderman Spawner", "minecraft:enderman", "ender_pearl", 40,
+                    "ender_pearl", 2).color("dark_purple"));
             return t;
         }
     }
@@ -118,6 +127,7 @@ public class VirtualSpawnersMod implements ModInitializer {
         public String owner;
         public String ownerName;
         public int count = 1;
+        public String holo;   // UUID of the floating text above the spawner
         public long lastTick;
         public double xp;
         public Map<String, Double> drops = new LinkedHashMap<>();
@@ -157,6 +167,7 @@ public class VirtualSpawnersMod implements ModInitializer {
 
             if (sd != null) {
                 if (!sl.getBlockState(pos).is(Blocks.SPAWNER)) { // block vanished (explosion etc.)
+                    removeHolo(sl, sd);
                     spawners.remove(key);
                     saveSpawners();
                     return InteractionResult.PASS;
@@ -168,6 +179,8 @@ public class VirtualSpawnersMod implements ModInitializer {
                         produce(sd);
                         if (!sp.isCreative()) held.shrink(1);
                         sd.count++;
+                        refreshHolo(sl, pos, sd);
+                        burst(sl, pos);
                         saveSpawners();
                         sp.sendSystemMessage(Util.text("Stacked! " + cfgName(sd.type) + " x" + sd.count,
                                 ChatFormatting.GREEN), true);
@@ -198,6 +211,7 @@ public class VirtualSpawnersMod implements ModInitializer {
             SpawnerData sd = spawners.get(key);
             if (sd == null) return true;
             if (!state.is(Blocks.SPAWNER)) {
+                removeHolo(sl, sd);
                 spawners.remove(key);
                 saveSpawners();
                 return true;
@@ -240,6 +254,7 @@ public class VirtualSpawnersMod implements ModInitializer {
         tag.putString(TAG, type);
         ItemStack stack = Util.named(Items.SPAWNER, count,
                 Util.text(t != null ? t.name : type, ChatFormatting.LIGHT_PURPLE),
+                Util.text("Stackable virtual spawner", colorOf(type)),
                 Util.text("Virtual drop generator. No mobs spawn.", ChatFormatting.GRAY),
                 Util.text("Right-click placed spawner to open storage.", ChatFormatting.GRAY),
                 Util.text("Shift-right-click with same type to stack.", ChatFormatting.GRAY));
@@ -253,10 +268,85 @@ public class VirtualSpawnersMod implements ModInitializer {
 
     private static void open(ServerPlayer sp, ServerLevel sl, BlockPos pos, String key, SpawnerData sd) {
         produce(sd);
+        ensureHolo(sl, pos, sd);
         sp.openMenu(new SimpleMenuProvider(
                 (id, inv, p) -> new SpawnerMenu(id, inv, sl, pos, key, sd),
                 Component.literal(cfgName(sd.type)).withStyle(ChatFormatting.LIGHT_PURPLE)));
         sp.playSound(SoundEvents.EXPERIENCE_ORB_PICKUP, 0.8f, 0.8f);
+    }
+
+
+    // ------------------------------------------------------------ floating text (hologram)
+
+    static String colorName(String type) {
+        TypeCfg t = config.types.get(type);
+        return t != null && t.color != null && !t.color.isBlank() ? t.color : "light_purple";
+    }
+
+    static ChatFormatting colorOf(String type) {
+        ChatFormatting f = ChatFormatting.getByName(colorName(type));
+        return f != null ? f : ChatFormatting.LIGHT_PURPLE;
+    }
+
+    private static String esc(String s) {
+        return s == null ? "" : s.replace("\\", "\\\\").replace("\"", "\\\"");
+    }
+
+    private static void runCommand(ServerLevel level, String cmd) {
+        try {
+            MinecraftServer server = level.getServer();
+            server.getCommands().performPrefixedCommand(
+                    server.createCommandSourceStack().withLevel(level).withSuppressedOutput(), cmd);
+        } catch (Exception e) {
+            LOGGER.error("Command failed: {}", cmd, e);
+        }
+    }
+
+    /** Removes the floating text of a spawner (if its chunk is loaded). */
+    static void removeHolo(ServerLevel level, SpawnerData sd) {
+        if (sd.holo == null) return;
+        runCommand(level, "kill " + sd.holo);
+    }
+
+    /** Makes sure the floating text exists, recreating it if it was lost. */
+    static void ensureHolo(ServerLevel level, BlockPos pos, SpawnerData sd) {
+        try {
+            if (sd.holo != null && level.getEntity(UUID.fromString(sd.holo)) != null) return;
+        } catch (Exception ignored) {
+            // fall through and recreate
+        }
+        refreshHolo(level, pos, sd);
+    }
+
+    /** (Re)creates the floating text above the spawner: "10x Zombie Spawner" + owner. */
+    static void refreshHolo(ServerLevel level, BlockPos pos, SpawnerData sd) {
+        TypeCfg t = config.types.get(sd.type);
+        if (t == null) return;
+        removeHolo(level, sd);
+        UUID id = UUID.randomUUID();
+        sd.holo = id.toString();
+        long msb = id.getMostSignificantBits();
+        long lsb = id.getLeastSignificantBits();
+        String uuidNbt = "[I;" + (int) (msb >> 32) + "," + (int) msb + "," + (int) (lsb >> 32) + "," + (int) lsb + "]";
+        String col = colorName(sd.type);
+        String text = "[{text:\"\u2726 \",color:\"gold\"},"
+                + "{text:\"" + sd.count + "x \",color:\"yellow\",bold:true},"
+                + "{text:\"" + esc(t.name) + "\",color:\"" + col + "\",bold:true},"
+                + "{text:\" \u2726\",color:\"gold\"},"
+                + "{text:\"\\nOwner: " + esc(sd.ownerName) + "\",color:\"gray\",bold:false}]";
+        String cmd = String.format(Locale.ROOT,
+                "summon minecraft:text_display %.2f %.2f %.2f {UUID:%s,Tags:[\"vspawner_holo\"],billboard:\"center\","
+                        + "shadow:1b,see_through:0b,background:0,line_width:220,text:%s,"
+                        + "transformation:{translation:[0f,0f,0f],scale:[1.1f,1.1f,1.1f],"
+                        + "left_rotation:[0f,0f,0f,1f],right_rotation:[0f,0f,0f,1f]}}",
+                pos.getX() + 0.5, pos.getY() + 1.45, pos.getZ() + 0.5, uuidNbt, text);
+        runCommand(level, cmd);
+    }
+
+    /** Little particle burst for placing / stacking. */
+    private static void burst(ServerLevel level, BlockPos pos) {
+        level.sendParticles(ParticleTypes.PORTAL, pos.getX() + 0.5, pos.getY() + 0.8, pos.getZ() + 0.5,
+                40, 0.4, 0.5, 0.4, 0.4);
     }
 
     // ------------------------------------------------------------ production (lazy, on access)
@@ -354,6 +444,7 @@ public class VirtualSpawnersMod implements ModInitializer {
             remaining -= n;
         }
         sl.removeBlock(pos, false);
+        removeHolo(sl, sd);
         spawners.remove(key);
         saveSpawners();
         sp.sendSystemMessage(Util.text("Picked up " + sd.count + "x " + cfgName(sd.type) + ".", ChatFormatting.GREEN), true);
@@ -393,6 +484,8 @@ public class VirtualSpawnersMod implements ModInitializer {
             spawners.put(key, sd);
             saveSpawners();
             neutralize(p.level(), pos, p.type());
+            refreshHolo(p.level(), pos, sd);
+            burst(p.level(), pos);
 
             sp.sendSystemMessage(Util.text(cfgName(p.type()) + " placed. Right-click it to open storage.",
                     ChatFormatting.LIGHT_PURPLE), true);
@@ -433,6 +526,15 @@ public class VirtualSpawnersMod implements ModInitializer {
                 try (Reader r = Files.newBufferedReader(file)) {
                     Config loaded = GSON.fromJson(r, Config.class);
                     if (loaded != null && loaded.types != null) config = loaded;
+                    // add any new built-in types (e.g. enderman) and colours to older config files
+                    for (Map.Entry<String, TypeCfg> e : Config.defaultTypes().entrySet()) {
+                        TypeCfg have = config.types.get(e.getKey());
+                        if (have == null) config.types.put(e.getKey(), e.getValue());
+                        else if (have.color == null) have.color = e.getValue().color;
+                    }
+                    try (Writer w = Files.newBufferedWriter(file)) {
+                        GSON.toJson(config, w);
+                    }
                 }
             } else {
                 try (Writer w = Files.newBufferedWriter(file)) {
